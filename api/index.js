@@ -1,7 +1,6 @@
 const MODEL = process.env.OPENROUTER_MODEL || 'z-ai/glm-4.6';
 const OPENROUTER = 'https://openrouter.ai/api/v1/chat/completions';
 
-// قاعدة البطاقات الموحدة (بسعر موحد 4 نقاط ومسبح مشترك)
 const BASE_CARDS = [
   { baseId: 'c1', name: 'بطاقة سرقة', description: 'تسلب 2 نقطة سمعة من الهدف وتحولها إليك.', effectType: 'STEAL', power: 2, targetRequired: true, rarity: 'شائعة' },
   { baseId: 'c2', name: 'بطاقة خصم', description: 'تخصم 2 نقطة سمعة من الهدف مباشرة.', effectType: 'ATTACK', power: 2, targetRequired: true, rarity: 'شائعة' },
@@ -56,7 +55,7 @@ async function openRouter(prompt, maxTokens = 300) {
         messages: [
           { 
             role: 'system', 
-            content: 'أنت راوي ورئيس محكمة جنائية غامضة في لعبة المحكمة السرية. مهمتك صياغة تقرير استخباري درامي يربط الأحداث الفعلية للجولة بناءً على من هاجم، من سرق، وتأثير بطاقات تشويه السمعة لتلفيق التهم بدقة. أعد JSON صالحاً فقط بلا Markdown.' 
+            content: 'أنت راوي ورئيس محكمة جنائية غامضة. مهمتك صياغة تقرير استخباري درامي يربط الأحداث الفعلية للجولة ويصوب التهم والشكوك نحو المستهدفين بتشويه السمعة بدقة. أعد JSON صالحاً فقط بلا Markdown.' 
           },
           { role: 'user', content: prompt }
         ]
@@ -105,7 +104,7 @@ function ageAlliances(players) {
 }
 
 function triggerGlobalEvent(players) {
-  if (Math.random() > 0.45) return null;
+  if (Math.random() > 0.40) return null; // رفع نسبة حدوث الحدث العشوائي لتظهر بانتظام
 
   const activePlayers = players.filter(active);
   if (activePlayers.length === 0) return null;
@@ -116,18 +115,26 @@ function triggerGlobalEvent(players) {
   const events = [
     {
       title: 'ضريبة النفوذ العالية',
-      desc: `تم فرض ضريبة استثنائية على المتصدر لموازنة القوى! خسارة 3 نقاط سمعة.`,
+      desc: `تم فرض ضريبة استثنائية قاسية على المتصدر لموازنة القوى! خصم 3 نقاط سمعة من ${topPlayer.name}.`,
       apply: () => { topPlayer.reputation = Math.max(0, topPlayer.reputation - 3); }
     },
     {
       title: 'مرسوم براءة عامة',
-      desc: 'صدر مرسوم ملكي بمنح جميع اللاعبين 1 نقطة سمعة إضافية.',
+      desc: 'صدر مرسوم ملكي مفاجئ بمنح جميع اللاعبين النشطين 1 نقطة سمعة إضافية.',
       apply: () => { activePlayers.forEach(p => p.reputation += 1); }
     },
     {
       title: 'كارثة اقتصادية للبلاط',
-      desc: 'تراجع الاستقرار في القصر! خصم 1 نقطة سمعة من كافة اللاعبين.',
+      desc: 'تراجع الاستقرار المالي في القصر بشكل مرعب! خصم 1 نقطة سمعة من كافة اللاعبين.',
       apply: () => { activePlayers.forEach(p => p.reputation = Math.max(0, p.reputation - 1)); }
+    },
+    {
+      title: 'حملة تفتيش مفاجئة',
+      desc: 'عثر الحراس على أدلة خفية؛ خصم 2 نقطة سمعة من عشوائي من الحاضرين.',
+      apply: () => {
+        const victim = activePlayers[Math.floor(Math.random() * activePlayers.length)];
+        victim.reputation = Math.max(0, victim.reputation - 2);
+      }
     }
   ];
 
@@ -141,13 +148,11 @@ async function handler(req, res) {
   const body = req.body || {};
   const action = body.action;
 
-  // توليد بطاقتين عشوائيتين في بداية اللعبة
   if (action === 'generate_initial_cards') {
     const cards = getRandomCards(BASE_CARDS, 2);
     return json(res, 200, { cards });
   }
 
-  // شراء بطاقة جديدة بسعر موحد (4 نقاط سمعة) ومن نفس المسبح
   if (action === 'buy_card') {
     const players = normalizePlayers(body.players);
     const buyer = players.find(p => p.id === idOf(body.playerId));
@@ -159,7 +164,6 @@ async function handler(req, res) {
     return json(res, 200, { players, boughtCard });
   }
 
-  // المعالجة الفورية لكشف بطاقات الخصم
   if (action === 'instant_reveal_cards') {
     const targetId = idOf(body.targetId);
     const hands = body.hands || {};
@@ -179,7 +183,6 @@ async function handler(req, res) {
     const reflectSet = new Set();
     const roundEventLogs = [];
 
-    // 1. معالجة بطاقات الحماية والقلب أولاً
     for (const act of actions) {
       const actor = byId.get(idOf(act.playerId));
       if (!active(actor) || !act.generatedCard) continue;
@@ -189,7 +192,6 @@ async function handler(req, res) {
       }
     }
 
-    // 2. معالجة بقية التأثيرات والتنفيذ الفعلي
     for (const act of actions) {
       const actor = byId.get(idOf(act.playerId));
       const card = act.generatedCard;
@@ -228,7 +230,7 @@ async function handler(req, res) {
         }
         case 'DEFAME': {
           defamedTargets.push(target.name);
-          roundEventLogs.push(`قام ${actor.name} بإطلاق حملة تشويه وتلفيق اتهامات ضد ${target.name}.`);
+          roundEventLogs.push(`حملة تشويه سمعة موجهة خصيصاً لتلفيق الشبهات ضد ${target.name}.`);
           crimes.push({ culpritId: actor.id, targetId: target.id });
           break;
         }
@@ -260,7 +262,7 @@ async function handler(req, res) {
             fromName: actor.name,
             text: String(act.text || 'رسالة سرية غامضة').slice(0, 300)
           });
-          roundEventLogs.push(`تبادل رسالة سرية بين اللاعبين.`);
+          roundEventLogs.push(`تم تسليم رسالة سرية مباشرة إلى ${target.name}.`);
           break;
         }
         case 'BOOST': {
@@ -273,9 +275,9 @@ async function handler(req, res) {
           messages[actor.id].push({
             id: uniqueId('msg'), kind: 'private_msg',
             fromName: 'تسريب استخباري',
-            text: `تم كشف تحركات ${target.name}: السمعة الحالية ${target.reputation}.`
+            text: `معلومات مسربة: السمعة الحالية لـ ${target.name} هي ${target.reputation}.`
           });
-          roundEventLogs.push(`تم تسريب معلومات وتجسس استخباري.`);
+          roundEventLogs.push(`تم رصد عملية تجسس واستعلام استخباري.`);
           break;
         }
       }
@@ -289,30 +291,37 @@ async function handler(req, res) {
     let courtCase = {
       title: 'تقرير المحكمة الاستخباري',
       trueCulpritId: trueCulprit,
-      clue: 'الأجواء ملغومة بالشكوك، وتستمر المؤامرات في الخفاء دون أدلة قاطعة.',
-      confidence: 50,
+      clue: '',
+      confidence: Math.floor(Math.random() * 40) + 55,
       globalEvent
     };
 
-    // صياغة مطورة لتقرير الذكاء الاصطناعي بناءً على الأحداث الحقيقية وتشويه السمعة
+    // تقرير ذكاء اصطناعي ديناميكي متطور يتفاعل مع تشويه السمعة وأحداث الجولة الفعليّة
     const prompt = `أحداث هذه الجولة الفعلية في المحكمة السرية:
-${roundEventLogs.length ? roundEventLogs.map(e => `- ${e}`).join('\n') : '- جولة هادئة نسبياً بتمريرات سرية.'}
+${roundEventLogs.length ? roundEventLogs.map(e => `- ${e}`).join('\n') : '- جولة هادئة بتمريرات سرية.'}
 
-ملاحظات هامش التحقيق وتشويه السمعة (مهم جداً):
-- المستهدفون بتشويه السمعة وتلفيق التهم: [${defamedTargets.join('، ') || 'لا يوجد مستهدف مباشر'}] (يجب أن يسلط التقرير التهم والشبهات والنظريات نحو هؤلاء بشكل رئيسي!).
+الأسماء المستهدفة بحملات تشويه السمعة وتلفيق التهم (ركز عليها تماماً في التقرير): [${defamedTargets.join('، ') || 'لا يوجد مستهدف مباشر'}]
 
-اكتب تقريراً جنائياً درامياً ومثيراً يربط الأحداث السابقة ببعضها، ويصوب التهم والملاحظات نحو اللاعبين المذكورين في التشويه والأحداث.
-أعد JSON بالشكل التالي فقط:
-{"clue": "نص التقرير المحبوك المشوق", "confidence": 70}`;
+اكتب تقريراً جنائياً درامياً ومثيراً باللغة العربية يربط الأحداث المذكورة، ويصوب الشبهات والاتهامات نحو الشخصيات المستهدفة بتشويه السمعة بطريقة غامضة وذكية.
+أعد JSON صالحاً بالشكل التالي فقط:
+{"clue": "نص التقرير المحبوك المشوق", "confidence": 75}`;
 
-    const raw = await openRouter(prompt, 260);
+    const raw = await openRouter(prompt, 300);
+    let parsedAi = null;
     try {
-      const ai = raw ? JSON.parse(raw.replace(/```json|```/g, '').trim()) : null;
-      if (ai?.clue) {
-        courtCase.clue = String(ai.clue).slice(0, 400);
-        courtCase.confidence = Math.max(20, Math.min(95, Number(ai.confidence) || 60));
-      }
+      parsedAi = raw ? JSON.parse(raw.replace(/```json|```/g, '').trim()) : null;
     } catch {}
+
+    if (parsedAi?.clue) {
+      courtCase.clue = String(parsedAi.clue).slice(0, 450);
+      courtCase.confidence = Math.max(30, Math.min(98, Number(parsedAi.confidence) || 70));
+    } else {
+      // مولد محلي ديناميكي في حال انقطاع الـ API لضمان عدم ثبات التقرير نهائياً
+      const culpritName = trueCulprit ? players.find(p => p.id === trueCulprit)?.name : 'مجهول';
+      let defameText = defamedTargets.length ? ` وتشير الأدلة المتطابقة إلى تورط محتمل للمشتبه بهم: [${defamedTargets.join(' و ')}] بناءً على حملات التشويه الممنهجة.` : ' والتحقيقات تشير لتحركات مريبة في الكواليس.';
+      let eventText = globalEvent ? ` بالتزامن مع وقوع حدث "${globalEvent.title}".` : '';
+      courtCase.clue = `تشير التقارير السرية لهذه الجولة إلى تصاعد التوتر في البلاط${eventText}.${defameText} إن أصابع الاتهام تبدو مشتتة بين الكواليس المظلمة.`;
+    }
 
     return json(res, 200, { players, pendingMessages: messages, courtCase });
   }
@@ -337,11 +346,15 @@ ${roundEventLogs.length ? roundEventLogs.map(e => `- ${e}`).join('\n') : '- جو
     if (winner === culpritId && culpritId !== null) {
       const culprit = byId.get(culpritId);
       if (culprit) culprit.reputation = Math.max(0, culprit.reputation - 4);
-      verdictMsg = 'الحكم الجماعي أصاب المتهم الحقيقي وتم الخصم من سمعته بنجاح!';
+      verdictMsg = 'الحكم الجماعي أصاب المتهم الحقيقي وتم خصم 4 نقاط سمعة من رصيده بنجاح!';
     } else {
       const wrong = byId.get(winner);
-      if (wrong) wrong.reputation += 2;
-      verdictMsg = 'الحكم الجماعي كان خاطئاً ولم يصب الجاني الحقيقي؛ حصل المتهم المظلوم على تعويض سمعة.';
+      if (winner !== 'NONE' && wrong) {
+        wrong.reputation += 2;
+        verdictMsg = `الحكم الجماعي كان خاطئاً! لم يكن المتهم (${wrong.name}) هو الجاني الحقيقي؛ فحصل على تعويض سمعة قدره (+2 نقطة).`;
+      } else {
+        verdictMsg = 'انتهى التصويت بالامتناع ولم يتم إدانة أحد في هذه الجولة.';
+      }
     }
 
     return json(res, 200, { players, verdictMsg });
