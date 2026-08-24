@@ -21,9 +21,9 @@
 let state=null,selected=null;
 const $=id=>document.getElementById(id);
 function escapeHtml(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function save(){localStorage.setItem('secret-court-v4',JSON.stringify(state))}
-function load(){try{return JSON.parse(localStorage.getItem('secret-court-v4'))}catch{return null}}
-function newGame(){localStorage.removeItem('secret-court-v4');location.reload()}
+function save(){localStorage.setItem('secret-court-v5',JSON.stringify(state))}
+function load(){try{return JSON.parse(localStorage.getItem('secret-court-v5'))}catch{return null}}
+function newGame(){localStorage.removeItem('secret-court-v5');location.reload()}
 
 async function startGame(){
   const names=$('names').value.split(',').map(x=>x.trim()).filter(Boolean);
@@ -31,8 +31,9 @@ async function startGame(){
   const stamp=Date.now();
   const players=names.map((name,i)=>({id:`player-${stamp}-${i}`,name,reputation:10,allyId:null,allyRoundsLeft:0}));
   
-  const hands={};
+  const hands={}, pendingMessages={};
   for(const p of players){
+    pendingMessages[p.id]=[];
     try{
       let res = await post({action:'generate_initial_cards'});
       hands[p.id] = res.cards;
@@ -41,7 +42,7 @@ async function startGame(){
     }
   }
 
-  state={players,pendingMessages:{},hands,round:0,currentTurn:0,actions:[],votes:[],currentCase:null};
+  state={players,pendingMessages,hands,round:0,currentTurn:0,actions:[],votes:[],currentCase:null};
   save();showGame();startRound();
 }
 
@@ -89,7 +90,7 @@ function showCurtain(){
 
 function renderPrivateInbox(p){
   const list=state.pendingMessages[p.id]||[];
-  if(list.length){
+  if(list.length>0){
     let html='';
     list.forEach((m,idx)=>{
       if(m.kind==='alliance_offer'){
@@ -109,7 +110,7 @@ function acceptAlliance(fromId, msgIdx){
   if(from&&!p.allyId&&!from.allyId){
     p.allyId=from.id;p.allyRoundsLeft=3;
     from.allyId=p.id;from.allyRoundsLeft=3;
-    alert(`تم عقد التحالف السري مع ${from.name} لمدة 3 جولات!`);
+    alert(`تم عقد التحالف السري مع ${from.name} بنجاح لمدة 3 جولات!`);
     state.pendingMessages[p.id].splice(msgIdx,1);
     save();renderStatus();renderAlliance(p);renderPrivateInbox(p);
   }
@@ -118,7 +119,7 @@ function acceptAlliance(fromId, msgIdx){
 function renderAlliance(p){
   if(p.allyId){
     const a=state.players.find(x=>x.id===p.allyId);
-    $('allyStatus').textContent=`🤝 حليفك السري: ${a?.name||'غير معروف'} (متبقي ${p.allyRoundsLeft} جولات)`;
+    $('allyStatus').textContent=`🤝 حليفك الحالي: ${a?.name||'غير معروف'} | متبقي لزوال التحالف: ${p.allyRoundsLeft} جولات. (تتقاسمون الأرباح والخسائر معاً)`;
     $('allyStatus').classList.remove('hidden');
   }
 }
@@ -244,7 +245,7 @@ function showRecap(){
   }else{
     $('eventBox').classList.add('hidden');
   }
-  $('clue').textContent='🔒 الدليل الشبهي الظني (تقرير الاستخبارات الديناميكي):\n'+state.currentCase.clue+`\n(نسبة التقدير الظني: ${state.currentCase.confidence}%)`;
+  $('clue').textContent='🔒 تقرير الدليل البسيط:\n'+state.currentCase.clue+`\n(نسبة التقدير الظني: ${state.currentCase.confidence}%)`;
 }
 
 function startVote(){
