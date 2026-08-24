@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>المحكمة السرية</title>
+<style>
+:root{--bg:#080b14;--panel:#121a2a;--line:#26334d;--red:#f43f5e;--gold:#fbbf24;--purple:#a855f7;--blue:#38bdf8}*{box-sizing:border-box}body{margin:0;padding:14px;background:radial-gradient(circle at top,#17213a,#080b14 65%);color:#f8fafc;font-family:system-ui,sans-serif}.app{max-width:760px;margin:auto}.panel{background:#121a2aee;border:1px solid var(--line);border-radius:16px;padding:16px;margin:12px 0;box-shadow:0 10px 30px #0005}button{width:100%;padding:11px;margin-top:8px;border:0;border-radius:9px;background:var(--red);color:#fff;font-weight:700;cursor:pointer}button.alt{background:#334155}button.gold{background:#d97706;color:#fff}button.purple{background:#7e22ce;color:#fff}input,select,textarea{width:100%;padding:11px;margin:5px 0 10px;border:1px solid var(--line);border-radius:9px;background:#070b14;color:#fff}textarea{min-height:80px}.grid,.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px}.player,.card,.box{padding:11px;border-radius:10px}.player{background:#080b14;border:1px solid var(--line);text-align:center}.card{border:2px solid #334155;background:#1a2437;cursor:pointer}.card.exceptional{border-color:var(--gold);background:#2d2109}.card.sel{border-color:var(--red);background:#36202c}.box{margin:9px 0;white-space:pre-line}.inbox{border-right:4px solid var(--blue);background:#10263b}.ally{border-right:4px solid var(--purple);background:#28173b}.clue{border-right:4px solid var(--purple);background:#21152f}.event{border-right:4px solid var(--gold);background:#2d230a}.muted{color:#a9b4c7;font-size:.86em}.small{font-size:.78em;color:#cbd5e1}.danger{color:#fb7185}.hidden{display:none!important}.top{display:flex;justify-content:space-between;align-items:center;gap:10px}
+</style>
+</head>
+<body><main class="app"><div class="top"><h1>المحكمة السرية</h1><button class="alt" style="width:auto" onclick="newGame()">جلسة جديدة</button></div>
+<section id="setup" class="panel"><h2>إعداد الجلسة</h2><p class="muted">أدخل أسماء اللاعبين مفصولة بفواصل. يتم توزيع بطاقتين مبدئياً لكل لاعب، والحد الأقصى لليد 3 بطاقات.</p><input id="names" value="أحمد, سارة, خالد"><button onclick="startGame()">بدء اللعبة</button></section>
+<section id="game" class="hidden"><div id="status" class="grid"></div><section id="action" class="panel"><div id="curtain"><h2 id="turnTitle"></h2><button id="curtainButton" onclick="openTurn()">فتح الدور السري</button></div><div id="turn" class="hidden"><h2 id="playerName"></h2><div id="inbox" class="box inbox hidden"></div><div id="allyStatus" class="box ally hidden"></div><h3>بطاقاتك المتاحة (حد أقصى 3)</h3><div id="cards" class="cards"></div><div style="display:flex;gap:8px"><button class="purple" onclick="buyCard()">🎲 شراء بطاقة جديدة (4 نقاط)</button></div><div id="targetArea" class="hidden"><label>الهدف</label><select id="target"></select></div><div id="textArea" class="hidden"><label>نص الرسالة</label><textarea id="messageText" maxlength="300"></textarea></div><div id="instantRevealResult" class="box inbox hidden" style="background:#20103b; border-right-color:var(--purple);"></div><button onclick="submitAction()">تأكيد الحركة وتسليم الهاتف</button></div></section>
+<section id="recap" class="panel hidden"><h2>تقرير نهاية الجولة</h2><div id="eventBox" class="box event hidden"></div><div id="clue" class="box clue"></div><button onclick="startVote()">الانتقال إلى التصويت الجماعي العلني</button></section>
+<section id="vote" class="panel hidden">
+  <h2>مرحلة التصويت الجماعي العلني</h2>
+  <p class="muted">يتم مناقشة الأحداث علناً عبر هذه الشاشة المشتركة وتسجيل الأصوات للحكم على المتهم.</p>
+  <div id="publicVoteArea"></div>
+</section>
+</main>
+<script>
+let state=null,selected=null;
+const $=id=>document.getElementById(id);
+function escapeHtml(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function save(){localStorage.setItem('secret-court-v3',JSON.stringify(state))}
+function load(){try{return JSON.parse(localStorage.getItem('secret-court-v3'))}catch{return null}}
+function newGame(){localStorage.removeItem('secret-court-v3');location.reload()}
+
+async function startGame(){
+  const names=$('names').value.split(',').map(x=>x.trim()).filter(Boolean);
+  if(names.length<2)return alert('أدخل اسمين على الأقل');
+  const stamp=Date.now();
+  const players=names.map((name,i)=>({id:`player-${stamp}-${i}`,name,reputation:10,allyId:null,allyRoundsLeft:0}));
+  
+  // جلب بطاقتين عشوائيتين لكل لاعب في البداية
+  const hands={};
+  for(const p of players){
+    try{
+      let res = await post({action:'generate_initial_cards'});
+      hands[p.id] = res.cards;
+    }catch{
+      hands[p.id] = [];
+    }
+  }
+
+  state={players,pendingMessages:{},hands,round:0,currentTurn:0,actions:[],votes:[],currentCase:null};
+  save();showGame();startRound();
+}
+
+function showGame(){$('setup').classList.add('hidden');$('game').classList.remove('hidden');renderStatus()}
+function renderStatus(){$('status').innerHTML=state.players.map(p=>`<div class="player"><b>${escapeHtml(p.name)}</b><br>${p.reputation>0?'⭐ '+p.reputation:'<span class="danger">مقصى</span>'}</div>`).join('')}
+
+function resetPrivateUI(){
+  selected=null;
+  $('messageText').value='';
+  $('target').innerHTML='';
+  $('targetArea').classList.add('hidden');
+  $('textArea').classList.add('hidden');
+  $('inbox').innerHTML='';
+  $('inbox').classList.add('hidden');
+  $('allyStatus').innerHTML='';
+  $('allyStatus').classList.add('hidden');
+  $('instantRevealResult').innerHTML='';
+  $('instantRevealResult').classList.add('hidden');
+  $('cards').innerHTML='';
+}
+
+function startRound(){
+  state.round++;
+  state.currentTurn=0;
+  state.actions=[];
+  state.votes=[];
+  state.currentCase=null;
+  save();
+  $('recap').classList.add('hidden');
+  $('vote').classList.add('hidden');
+  $('action').classList.remove('hidden');
+  showCurtain();
+}
+
+function showCurtain(){
+  resetPrivateUI();
+  while(state.currentTurn<state.players.length&&!state.players[state.currentTurn].reputation)state.currentTurn++;
+  if(state.currentTurn>=state.players.length)return resolveRound();
+  $('turn').classList.add('hidden');
+  $('curtain').classList.remove('hidden');
+  $('turnTitle').textContent=`سلّم الهاتف إلى: ${state.players[state.currentTurn].name}`;
+  $('curtainButton').textContent='فتح الدور السري';
+  $('curtainButton').onclick=openTurn;
+}
+
+function renderPrivateInbox(p){
+  const list=state.pendingMessages[p.id]||[];
+  if(list.length){
+    let html='';
+    list.forEach((m,idx)=>{
+      if(m.kind==='alliance_offer'){
+        html+=`🤝 <b>${escapeHtml(m.text)}</b><br><button onclick="acceptAlliance('${m.fromId}', ${idx})">قبول التحالف السري</button><hr>`;
+      }else{
+        html+=`📩 <b>${escapeHtml(m.fromName)}:</b> ${escapeHtml(m.text)}<hr>`;
+      }
+    });
+    $('inbox').innerHTML=html;
+    $('inbox').classList.remove('hidden');
+  }
+}
+
+function acceptAlliance(fromId, msgIdx){
+  const p=state.players[state.currentTurn];
+  const from=state.players.find(x=>x.id===fromId);
+  if(from&&!p.allyId&&!from.allyId){
+    p.allyId=from.id;p.allyRoundsLeft=3;
+    from.allyId=p.id;from.allyRoundsLeft=3;
+    alert(`تم عقد التحالف السري مع ${from.name} لمدة 3 جولات!`);
+    state.pendingMessages[p.id].splice(msgIdx,1);
+    save();renderStatus();renderAlliance(p);renderPrivateInbox(p);
+  }
+}
+
+function renderAlliance(p){
+  if(p.allyId){
+    const a=state.players.find(x=>x.id===p.allyId);
+    $('allyStatus').textContent=`🤝 حليفك السري: ${a?.name||'غير معروف'} (متبقي ${p.allyRoundsLeft} جولات)`;
+    $('allyStatus').classList.remove('hidden');
+  }
+}
+
+function openTurn(){
+  const p=state.players[state.currentTurn];
+  resetPrivateUI();
+  $('curtain').classList.add('hidden');
+  $('turn').classList.remove('hidden');
+  $('playerName').textContent=`الدور السري: ${p.name} (السمعة: ${p.reputation})`;
+  renderPrivateInbox(p);
+  renderAlliance(p);
+  renderHand(p);
+}
+
+async function buyCard(){
+  const p=state.players[state.currentTurn];
+  const currentHand = state.hands[p.id] || [];
+  if(currentHand.length >= 3) return alert('لديك الحد الأقصى من البطاقات (3 بطاقات)! استخدم إحداها أولاً.');
+  if(p.reputation <= 4) return alert('شراء بطاقة جديدة يتطلب 4 نقاط سمعة!');
+  
+  try{
+    const d = await post({action:'buy_card', playerId: p.id, players: state.players});
+    state.players = d.players;
+    if(!state.hands[p.id]) state.hands[p.id] = [];
+    state.hands[p.id].push(d.boughtCard);
+    save();
+    renderStatus();
+    renderHand(p);
+    alert(`حصلت على بطاقة: ${d.boughtCard.name}`);
+  }catch(e){alert(e.message)}
+}
+
+function renderHand(p){
+  const hand = state.hands[p.id] || [];
+  if(hand.length === 0){
+    $('cards').innerHTML = '<p class="muted">ليس لديك بطاقات حالياً.</p>';
+    return;
+  }
+  $('cards').innerHTML = hand.map(c=>`<div class="card ${c.rarity==='استثنائية'||c.rarity==='نادرة'?'exceptional':''}" data-card="${escapeHtml(c.id)}" onclick="selectCard('${escapeHtml(c.id)}',this)"><b>${escapeHtml(c.name)}</b><br><span class="small">${escapeHtml(c.description)}</span></div>`).join('');
+}
+
+function selectCard(id,el){
+  const p=state.players[state.currentTurn];
+  selected=(state.hands[p.id]||[]).find(c=>c.id===id);
+  if(!selected)return;
+  document.querySelectorAll('#cards .card').forEach(x=>x.classList.remove('sel'));
+  el.classList.add('sel');
+  
+  const needs=Boolean(selected.targetRequired);
+  $('targetArea').classList.toggle('hidden',!needs);
+  $('textArea').classList.toggle('hidden',selected.effectType!=='MESSAGE');
+  $('instantRevealResult').classList.add('hidden');
+
+  if(needs){
+    // إذا كانت بطاقة كشف البطاقات، نسمح باستهداف أي لاعب آخر، وإلا اللاعبين النشطين
+    let targets = state.players.filter(x=>x.id!==p.id&&x.reputation>0);
+    $('target').innerHTML=targets.map(x=>`<option value="${x.id}">${escapeHtml(x.name)}</option>`).join('');
+  }
+}
+
+async function submitAction(){
+  if(!selected)return alert('اختر بطاقة أولاً');
+  const p=state.players[state.currentTurn];
+  const targetId=selected.targetRequired?$('target').value:null;
+  if(selected.targetRequired&&!targetId)return alert('اختر هدفاً للبطاقة');
+  if(selected.effectType==='MESSAGE'&&!$('messageText').value.trim())return alert('اكتب نص الرسالة');
+
+  // معالجة فورية لبطاقة كشف البطاقات (REVEAL_CARDS أو ما شابه)
+  if(selected.effectType === 'REVEAL_CARDS' || selected.effectType === 'REVEAL') {
+    try {
+      const res = await post({action: 'instant_reveal_cards', targetId, hands: state.hands});
+      // إزالة البطاقة المستخدمة من يد اللاعب
+      state.hands[p.id] = state.hands[p.id].filter(c => c.id !== selected.id);
+      const targetName = state.players.find(x => x.id === targetId)?.name || 'الهدف';
+      let cardsDesc = res.targetCards.length ? res.targetCards.map(c => `• ${c.name}: ${c.description}`).join('<br>') : 'لا يحمل أي بطاقات حالياً.';
+      $('instantRevealResult').innerHTML = `🔍 <b>بطاقات ${escapeHtml(targetName)} المكشوفة فوريّاً:</b><br>${cardsDesc}`;
+      $('instantRevealResult').classList.remove('hidden');
+      save();
+      renderHand(p);
+      selected = null;
+      return; // نوقف التنقل المؤقت ليتسنى للاعب رؤية البطاقات المكشوفة
+    } catch(e) {
+      return alert(e.message);
+    }
+  }
+
+  // إزالة البطاقة المستخدمة من يد اللاعب للبطاقات العادية
+  state.hands[p.id] = state.hands[p.id].filter(c => c.id !== selected.id);
+
+  state.actions.push({
+    playerId:p.id,
+    targetId,
+    cardId:selected.id,
+    generatedCard:selected,
+    text:$('messageText').value.trim()
+  });
+
+  delete state.pendingMessages[p.id];
+  save();
+  state.currentTurn++;
+  showCurtain();
+}
+
+async function resolveRound(){
+  resetPrivateUI();
+  $('action').classList.add('hidden');
+  try{
+    const d=await post({action:'resolve_round',players:state.players,actions:state.actions,pendingMessages:state.pendingMessages});
+    state.players=d.players;
+    state.pendingMessages=d.pendingMessages||{};
+    state.currentCase=d.courtCase;
+    save();
+    renderStatus();
+    showRecap();
+  }catch(e){
+    $('action').classList.remove('hidden');
+    showCurtain();
+    alert(e.message);
+  }
+}
+
+function showRecap(){
+  $('recap').classList.remove('hidden');
+  if(state.currentCase.globalEvent){
+    $('eventBox').innerHTML=`📢 <b>حدث هام طارئ: ${escapeHtml(state.currentCase.globalEvent.title)}</b><br>${escapeHtml(state.currentCase.globalEvent.description)}`;
+    $('eventBox').classList.remove('hidden');
+  }else{
+    $('eventBox').classList.add('hidden');
+  }
+  $('clue').textContent='🔒 الدليل الشبهي الظني (تقرير الذكاء الاصطناعي):\n'+state.currentCase.clue+`\n(نسبة التقدير الظني: ${state.currentCase.confidence}%)`;
+}
+
+// نظام التصويت الجماعي العلني الجديد عبر شاشة مشتركة
+function startVote(){
+  $('recap').classList.add('hidden');
+  $('vote').classList.remove('hidden');
+  
+  const activePlayers = state.players.filter(p => p.reputation > 0);
+  let html = `<div class="box">اختر المتهم الذي تعتقد أنه يقف خلف أحداث الجولة:</div>`;
+  html += `<div style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px;">`;
+  
+  activePlayers.forEach(voter => {
+    html += `<div style="background:#080b14;padding:10px;border-radius:8px;border:1px solid var(--line);">
+      <b>تصويت اللاعب: ${escapeHtml(voter.name)}</b>
+      <select id="vote_for_${voter.id}" style="margin-top:5px;">
+        <option value="NONE">امتناع / لا أحد</option>
+        ${activePlayers.filter(target => target.id !== voter.id).map(target => `<option value="${target.id}">${escapeHtml(target.name)}</option>`).join('')}
+      </select>
+    </div>`;
+  });
+  
+  html += `</div><button class="gold" onclick="submitPublicVotes()">تأكيد وإعلان النتيجة الجماعية</button>`;
+  $('publicVoteArea').innerHTML = html;
+}
+
+async function submitPublicVotes(){
+  const activePlayers = state.players.filter(p => p.reputation > 0);
+  let votes = [];
+  for(const voter of activePlayers){
+    const val = $(`vote_for_${voter.id}`).value;
+    votes.push({ voterId: voter.id, accusedId: val === 'NONE' ? null : val });
+  }
+
+  try{
+    const d = await post({action:'resolve_vote', players: state.players, votes: votes, trueCulpritId: state.currentCase.trueCulpritId});
+    state.players = d.players;
+    save();
+    alert(d.verdictMsg);
+    if(state.players.filter(p => p.reputation > 0).length <= 1) return newGame();
+    startRound();
+  }catch(e){
+    alert('تعذر حسم التصويت: '+e.message);
+  }
+}
+
+async function post(body){
+  let response=await fetch('/api',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  let data=await response.json();
+  if(!response.ok)throw Error(data.message||data.error||'خطأ API');
+  return data;
+}
+
+state=load();
+if(state&&state.players?.length){
+  showGame();
+  if(state.currentCase)showRecap();
+  else{$('action').classList.remove('hidden');showCurtain();}
+}
+</script></body></html>
